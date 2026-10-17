@@ -1,0 +1,946 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Capsule toy machine</title></head><body>
+<script>/* ============================================================
+   Colorfigures core: projection, shapes, shading, ink, page shell.
+   A figure page loads this file, then calls mountFigure({...}).
+   See BRIEF.md for the drawing contract and conventions.
+   ============================================================ */
+
+/* ---------- palettes ---------- */
+const PALS = {
+  mustard: { l:'#f4b829', m:'#d49c1f', d:'#4e4a18' },
+  tomato:  { l:'#ef6a4c', m:'#cf5038', d:'#4a2219' },
+  mint:    { l:'#93d3b0', m:'#71b693', d:'#1f4034' },
+  cobalt:  { l:'#76a0e2', m:'#5a82c6', d:'#1c2948' },
+  blush:   { l:'#f3a6bb', m:'#d8869c', d:'#4b2430' },
+};
+const METAL   = { l:'#eef0f0', m:'#c6ccce', d:'#8f989b' };
+const CLEAR   = { l:'#e4f2f4', m:'#c4dfe4', d:'#97b9c0' };
+const CERAMIC = { l:'#fbfaf3', m:'#e3e0d2', d:'#bdb8a6' };
+const DARK    = { l:'#55504a', m:'#3d3935', d:'#272421' };
+const INK = '#231e16';
+const SHADOW = '#41538f';
+
+/* ---------- projection (x = depth toward viewer-right, y = toward viewer-left, z = up) ---------- */
+const C = Math.cos(Math.PI/6), S = Math.sin(Math.PI/6);
+let OX = 0, OY = 0;
+/* VIEW turns the object in 90° steps about a vertical axis through its centre (RC):
+   0 = front (+x) and left (+y) faces toward the viewer, 1 = turned once (the +y side becomes the front)…
+   Figures keep modelling in their own coordinates; P / Dv / vis / tone / depthOf all apply the turn. */
+let VIEW = 0, RC = [0, 0];
+const VIEW_NAMES = ['front', 'left side', 'back', 'right side'];
+const TURNS = [0, 2];                 // the views the UI offers: front and back (figures still draw correctly in all four)
+const rotV = ([x,y,z]) => { switch (VIEW & 3){ case 1: return [y,-x,z]; case 2: return [-x,-y,z]; case 3: return [-y,x,z]; default: return [x,y,z]; } };
+const rotXY = (x,y) => { const r = rotV([x-RC[0], y-RC[1], 0]); return [r[0]+RC[0], r[1]+RC[1]]; };
+const P0 = (x,y,z) => [(x-y)*C + OX, (x+y)*S - z + OY];                       // raw iso, no turn
+const P  = (x,y,z) => { const [a,b] = rotXY(x,y); return [(a-b)*C + OX, (a+b)*S - z + OY]; };
+const Dv = (x,y,z) => { const [a,b,c] = rotV([x,y,z]); return [(a-b)*C, (a+b)*S - c]; };
+// distance toward the viewer in the current view: draw parts with smaller depth first
+const depthOf = p => { const [a,b] = rotXY(p[0],p[1]); return a + b + p[2]; };
+// sort [{at:[x,y,z], svg}] back-to-front for the current view and join
+const byDepth = parts => parts.filter(Boolean).sort((p,q) => depthOf(p.at) - depthOf(q.at)).map(p => p.svg).join('');
+const f  = v => v.toFixed(1);
+const pd = (pts, close=true) => 'M' + pts.map(p => { const q = P(p[0],p[1],p[2]); return f(q[0])+' '+f(q[1]); }).join('L') + (close ? 'Z' : '');
+const sp = pts => 'M' + pts.map(q => f(q[0])+' '+f(q[1])).join('L') + 'Z';
+
+/* ---------- 2D shapes in a plane's (u,v) coords (v up), mapped to 3D by a plane ---------- */
+const arcUV  = (cu,cv,r,a0,a1,n=7) => { const o=[]; for (let i=0;i<=n;i++){ const a=(a0+(a1-a0)*i/n)*Math.PI/180; o.push([cu+r*Math.cos(a), cv+r*Math.sin(a)]); } return o; };
+const rrUV   = (u0,v0,u1,v1,r,n=7) => r <= 0 ? rectUV(u0,v0,u1,v1) : [...arcUV(u1-r,v0+r,r,-90,0,n), ...arcUV(u1-r,v1-r,r,0,90,n), ...arcUV(u0+r,v1-r,r,90,180,n), ...arcUV(u0+r,v0+r,r,180,270,n)];
+const rectUV = (u0,v0,u1,v1) => [[u0,v0],[u1,v0],[u1,v1],[u0,v1]];
+const ellUV  = (cu,cv,ru,rv,n=24) => Array.from({length:n}, (_,i) => { const a=i/n*2*Math.PI; return [cu+ru*Math.cos(a), cv+rv*Math.sin(a)]; });
+const PX = x => ([u,v]) => [x,u,v];      // front-facing plane x = const   (u = y, v = z)
+const PY = y => ([u,v]) => [u,y,v];      // side plane y = const           (u = x, v = z)
+const PZ = z => ([u,v]) => [u,v,z];      // horizontal plane z = const     (u = x, v = y)
+const on = (plane, uv) => uv.map(plane);
+
+/* ---------- vectors + shading ---------- */
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const norm=a=>{ const l=Math.hypot(...a)||1; return a.map(v=>v/l); };
+const avg=ps=>ps.reduce((s,p)=>[s[0]+p[0]/ps.length,s[1]+p[1]/ps.length,s[2]+p[2]/ps.length],[0,0,0]);
+const vis = n => { const r = rotV(n); return r[0]+r[1]+r[2] > 1e-6; };   // viewer looks from (+1,+1,+1) after the turn
+const facing = vis;                                                       // readable alias: is this face toward the viewer?
+const SHADOW_K = 0.85, AZ_MIN = 20, AZ_MAX = 160;
+let L = [0,0,1], SH = [0,0];
+function setLight(deg){ const a=deg*Math.PI/180; SH=[SHADOW_K*Math.cos(a), SHADOW_K*Math.sin(a)]; L=norm([-SH[0],-SH[1],1]); }
+const LIN = norm([.6,.2,1]);                       // fixed light for interiors / small props
+const tone  = (n,m) => { const d=dot(rotV(n),L);   return d>-.15 ? m.l : d>-.45 ? m.m : m.d; };   // exterior, follows the sun
+const toneI = (n,m) => { const d=dot(rotV(n),LIN); return d>.6 ? m.l : d>.05 ? m.m : m.d; };      // interior / props
+const mix = (a,b,t) => '#' + [1,3,5].map(i => Math.round(parseInt(a.substr(i,2),16)*(1-t) + parseInt(b.substr(i,2),16)*t).toString(16).padStart(2,'0')).join('');
+const matOf = hex => ({ l:hex, m:mix(hex,'#000000',.16), d:mix(hex,'#000000',.42) });
+const ease = t => t<.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2;
+
+/* ---------- drawing primitives (all return SVG strings) ---------- */
+const ink   = (d,w=1.4) => `<path d="${d}" fill="none" stroke="${INK}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round"/>`;
+const fill  = (d,c,extra='') => `<path d="${d}" fill="${c}" ${extra}/>`;
+const face  = (d,c) => `<path d="${d}" fill="${c}" stroke="${c}" stroke-width=".7" stroke-linejoin="round"/>`;
+const shape = (pts,c,w=1.2) => fill(pd(pts),c) + (w ? ink(pd(pts),w) : '');
+const line  = (pts,w=1.2) => ink(pd(pts,false),w);
+// Loft between two rings of equal length (closed). colour(n) picks each strip's fill; flip = seen from inside.
+function loft(A, B, colour, flip=false){
+  const n=A.length, cen=avg(A.concat(B)); let s='';
+  for (let i=0;i<n;i++){
+    const a0=A[i], a1=A[(i+1)%n], b1=B[(i+1)%n], b0=B[i];
+    let nr = norm(cross(sub(a1,a0), sub(b0,a0)));
+    if (!isFinite(nr[0])) continue;
+    if (dot(nr, sub(avg([a0,a1,b1,b0]), cen)) < 0) nr = nr.map(v=>-v);
+    if (flip) nr = nr.map(v=>-v);
+    if (vis(nr)) s += face(pd([a0,a1,b1,b0]), colour(nr));
+  }
+  return s;
+}
+function hull(pts){
+  pts = pts.slice().sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+  const cr=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]); const lo=[], up=[];
+  for (const p of pts){ while(lo.length>=2 && cr(lo[lo.length-2],lo[lo.length-1],p)<=0) lo.pop(); lo.push(p); }
+  for (const p of pts.reverse()){ while(up.length>=2 && cr(up[up.length-2],up[up.length-1],p)<=0) up.pop(); up.push(p); }
+  lo.pop(); up.pop(); return lo.concat(up);
+}
+const hullInk = (pts3,w=1.4) => ink(sp(hull(pts3.map(p=>P(...p)))), w);
+// Axis-aligned box: three visible faces, shaded, each outlined. shade = tone (sunlit) or toneI (interior).
+function box(x0,y0,z0,x1,y1,z1,m,shade=toneI,w=1){
+  // all six faces, drawn only when they face the viewer (sides first, then top) — correct in every VIEW
+  const F = [
+    [[0,1,0],  [[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]]],
+    [[1,0,0],  [[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],[x1,y0,z1]]],
+    [[0,-1,0], [[x0,y0,z0],[x1,y0,z0],[x1,y0,z1],[x0,y0,z1]]],
+    [[-1,0,0], [[x0,y0,z0],[x0,y1,z0],[x0,y1,z1],[x0,y0,z1]]],
+    [[0,0,1],  [[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]]] ];
+  return F.filter(([n]) => vis(n)).map(([n,q]) => shape(q, shade(n,m), w)).join('');
+}
+// Rounded-profile extrusion: profile (u=y, v=z) swept along x from x0 to x1. Body of most machines.
+function extrude(profileUV, x0, x1, m, shade=tone){ return loft(on(PX(x0),profileUV), on(PX(x1),profileUV), n=>shade(n,m)); }
+// Vertical cylinder (axis z) centred (x,y), radius r from z0 to z1, with top cap.
+function cyl(x,y,z0,z1,r,m,shade=toneI,w=1.2,n=24){
+  const A=on(PZ(z0),ellUV(x,y,r,r,n)), B=on(PZ(z1),ellUV(x,y,r,r,n));
+  return loft(A,B,nr=>shade(nr,m)) + fill(pd(B),shade([0,0,1],m)) + hullInk([...A,...B],w) + ink(pd(B),w*.8);
+}
+// Cylinder lying along x (e.g. a knob or dial sticking out of a front face): centred (y,z), from x0 to x1.
+function cylX(x0,x1,y,z,r,m,shade=toneI,w=1.1,n=20){
+  const A=on(PX(x0),ellUV(y,z,r,r,n)), B=on(PX(x1),ellUV(y,z,r,r,n));
+  // cap on whichever end faces the viewer (the +x end in VIEW 0)
+  const capB = vis([1,0,0]), cap = capB ? B : A, cn = capB ? [1,0,0] : [-1,0,0];
+  return loft(A,B,nr=>shade(nr,m)) + (vis(cn) ? fill(pd(cap),shade(cn,m)) : '') + hullInk([...A,...B],w) + (vis(cn) ? ink(pd(cap),w*.8) : '');
+}
+// Text lying flat on a front plane x = const, centred at (y,z) baseline; reads left-to-right on screen.
+const txM = (o, U, V) => `matrix(${U[0].toFixed(4)} ${U[1].toFixed(4)} ${V[0].toFixed(4)} ${V[1].toFixed(4)} ${f(o[0])} ${f(o[1])})`;
+const tx = (x,y,z,str,size,col=INK,weight=700) => { const o=P(x,y,z);
+  return `<text transform="${txM(o, Dv(0,-1,0), Dv(0,0,-1))}" font-size="${size}" fill="${col}" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-weight="${weight}" letter-spacing=".04em">${str}</text>`; };
+// Text on a side plane y = const, centred at (x,z).
+const txY = (x,y,z,str,size,col=INK,weight=700) => { const o=P(x,y,z);
+  return `<text transform="${txM(o, Dv(1,0,0), Dv(0,0,-1))}" font-size="${size}" fill="${col}" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-weight="${weight}" letter-spacing=".04em">${str}</text>`; };
+// Cast shadow of a set of 3D points (any outline of the object), pushed along the light onto z = 0.
+// the light stays put relative to the viewer, so the shadow is cast in turned coordinates
+const castShadow = pts3 => fill(sp(hull(pts3.map(([x,y,z]) => { const [a,b] = rotXY(x,y); return P0(a+z*SH[0], b+z*SH[1], 0); }))), SHADOW);
+// Group helpers: clickable target, clip to an opening.
+const act  = (name, inner, data='') => `<g data-act="${name}" ${data}>${inner}</g>`;
+let _clipN = 0;
+const clipTo = (pts3, inner) => { const id = 'k' + (++_clipN); return `<clipPath id="${id}"><path d="${pd(pts3)}"/></clipPath><g clip-path="url(#${id})">${inner}</g>`; };
+
+/* ---------- constant on-screen line weight ----------
+   Stroke widths are written in model units, and each figure is zoomed to fill the frame, so a small
+   object would get fat lines. INK_K rescales every stroke-width (and the wobble/grain filter) so all
+   figures match the reference zoom of the booth / vending machine (viewBox ≈ 585 units wide). */
+const INK_REF_VB = 585;
+let INK_K = 1;
+const inkScale = svg => INK_K === 1 ? svg : svg.replace(/stroke-width="([\d.]+)"/g, (_, w) => `stroke-width="${(+w * INK_K).toFixed(2)}"`);
+
+/* ---------- page shell ---------- */
+const CORE_CSS = `
+  :root{--paper:#f2efe7;--ink:#231e16;--muted:#857d6e;--rule:#ddd6c8}
+  *{box-sizing:border-box} html,body{margin:0;height:100%}
+  body{background-color:var(--paper);
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .42  0 0 0 0 .39  0 0 0 0 .33  .16 0 0 0 0'/></filter><rect width='100%' height='100%' filter='url(%23p)'/></svg>");
+    overflow-x:hidden;color:var(--ink);font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;display:flex;flex-direction:column;align-items:center;padding:24px 16px 32px}
+  header{width:100%;max-width:760px;display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+  header h1{font-size:13px;font-weight:600;margin:0;letter-spacing:.02em} header span{color:var(--muted)}
+  #fig{width:100%;max-width:760px;height:auto;display:block;margin:4px 0 8px;user-select:none;overflow:visible}
+  #fig [data-act]{cursor:pointer}
+  #readout, .idea{display:none}   /* status line + big idea are off: the buttons and motion tell the story */
+  .idea{width:100%;max-width:760px;margin:-6px 0 16px;font-size:12.5px;line-height:1.5;text-align:center;color:var(--ink)}
+  .idea strong{letter-spacing:.12em;text-transform:uppercase;font-size:11px;margin-right:8px}
+  #readout{position:relative;min-height:1.4em;letter-spacing:.08em;text-transform:uppercase;margin-bottom:14px;text-align:center;text-shadow:0 0 3px var(--paper),0 0 6px var(--paper),0 0 10px var(--paper)}
+  .stage{position:relative;width:100%;max-width:760px}
+  .actions{position:absolute;top:4px;left:0;display:flex;flex-direction:column;align-items:flex-start;gap:8px;z-index:2;max-width:220px}
+  .actions .cap{color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin:0 0 2px}
+  .turn{position:absolute;right:0;bottom:2%;display:flex;align-items:center;gap:8px;z-index:2;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .turn span{min-width:7.5em;text-align:center}
+  .tb{font:inherit;font-size:17px;line-height:1;color:var(--ink);background:transparent;border:1.5px solid var(--ink);border-radius:999px;width:34px;height:34px;cursor:pointer;display:grid;place-items:center;padding:0}
+  .tb:hover{background:#0000000d}
+  #fig{transition:transform .14s ease-in}
+  #fig.flip{transform:scaleX(.04)}
+  #fig.dragging{cursor:grabbing}
+  .stats{position:absolute;top:4px;right:0;display:flex;flex-direction:column;align-items:flex-end;gap:10px;z-index:2;text-align:right}
+  .stat .k{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .stat .v{font-size:34px;font-weight:800;line-height:1.05;letter-spacing:-.01em;font-variant-numeric:tabular-nums;color:var(--ink)}
+  .stat.small .v{font-size:20px}
+  .stat .v.bump{animation:bump .35s ease-out}
+  @keyframes bump{0%{transform:scale(1.18)}100%{transform:none}}
+  .stepwrap{position:relative;display:flex;align-items:center;gap:8px}
+  .act{font:inherit;color:var(--ink);background:var(--paper);border:1.5px solid var(--ink);border-radius:999px;padding:5px 14px;cursor:pointer;white-space:nowrap}
+  .act:hover{background:color-mix(in srgb,var(--paper) 92%,var(--ink))}
+  .act .car{margin-left:6px;font-size:10px}
+  .act:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+  .chips{display:none;flex-wrap:wrap;gap:6px;background:var(--paper);border:2px solid var(--ink);border-radius:12px;box-shadow:3px 3px 0 var(--ink);
+    padding:8px;width:max-content;max-width:min(300px,62vw);position:absolute;left:calc(100% + 10px);top:-4px;z-index:3}
+  .stepwrap.open .chips{display:flex}
+  .chip{white-space:nowrap;font:inherit;font-size:11.5px;font-weight:700;color:var(--ink);background:var(--paper);border:1.5px solid var(--ink);border-radius:8px;padding:4px 8px;cursor:pointer;box-shadow:2px 2px 0 var(--ink)}
+  .chip:hover{background:var(--accent,#f4b829);transform:translate(-1px,-1px)}
+  .chip:disabled{opacity:.35;cursor:default;transform:none;background:var(--paper)}
+  
+  @media (max-width:560px){body{padding:14px 12px 24px}header span,.actions .cap{display:none}.actions{flex-direction:row;flex-wrap:wrap;gap:6px}.act{font-size:12px;padding:4px 11px}.turn{position:static;justify-content:flex-end;margin-top:4px}.stats{position:static;flex-direction:row;justify-content:flex-end;gap:18px;margin-bottom:4px}.actions{position:static;max-width:none;margin:6px 0 4px}.chips{left:0;top:calc(100% + 8px)}}
+  .controls{width:100%;max-width:760px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px 28px;border-top:1px solid var(--rule);padding-top:16px}
+  .ctl{display:flex;flex-direction:column;gap:6px}
+  .ctl label{color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+  input[type=range]{width:100%;accent-color:var(--ink)}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  button{font:inherit;color:var(--ink);background:transparent;border:1.5px solid var(--ink);border-radius:999px;padding:5px 14px;cursor:pointer}
+  button:hover{background:#0000000d}
+  .sw{width:26px;height:26px;padding:0;border-radius:50%} .sw[aria-pressed=true]{outline:2px solid var(--ink);outline-offset:2px}`;
+
+const filterFor = k => `<filter id="hand" x="-3%" y="-3%" width="106%" height="106%" color-interpolation-filters="sRGB">
+  <feTurbulence type="fractalNoise" baseFrequency="${(0.045/k).toFixed(4)}" numOctaves="2" seed="4" result="warp"/>
+  <feDisplacementMap id="wob" in="SourceGraphic" in2="warp" scale="${(2.4*k).toFixed(2)}" xChannelSelector="R" yChannelSelector="G" result="wob"/>
+  <feTurbulence type="fractalNoise" baseFrequency="${(0.9/k).toFixed(4)}" numOctaves="3" seed="11" result="n1"/>
+  <feColorMatrix in="n1" type="matrix" values=".3 0 0 0 .84  .3 0 0 0 .84  .3 0 0 0 .84  0 0 0 0 1" result="grain"/>
+  <feTurbulence type="fractalNoise" baseFrequency="${(0.012/k).toFixed(4)}" numOctaves="2" seed="7" result="n2"/>
+  <feColorMatrix in="n2" type="matrix" values=".3 0 0 0 .85  .3 0 0 0 .85  .3 0 0 0 .85  0 0 0 0 1" result="blot"/>
+  <feBlend in="wob" in2="grain" mode="multiply" result="g1"/><feBlend in="g1" in2="blot" mode="multiply" result="g2"/>
+  <feComposite in="g2" in2="wob" operator="in"/></filter>`;
+
+/* mountFigure({
+     fig:'03', title:'Photo booth', hint:'click the curtain…',
+     size:[W,D,H],                 // bounding box, used to frame the view (shadow range included)
+     palette:'mustard',            // default PALS key
+     state:{...},                  // figure state, merged into st (st.pal, st.az are built in)
+     scene: (st, m) => svgString,  // m = current palette {l,m,d}
+     readout: st => 'text',        // status line under the figure
+     buttons: [{label, onClick(st, ui)}      // listed in the order the user should do them; shown numbered
+               | {label, choices: st => [{label, onClick(st,ui), disabled?}]}],   // opens a picker
+     stats: st => [{label, value, small?}],   // optional: big numbers top-right (credit, change, score)
+     views: true,                  // optional: the figure supports turning (VIEW 0..3); adds ⟲ ⟳, drag and Q/E
+     center: [x,y],                // optional: turning axis (default: middle of size)
+     next: st => index,            // optional: which step is current (-1 while busy)
+     acts: { name(st, el, ui){} },  // clicks on act(name, …) groups; el has dataset
+     params(st, q){}               // optional: read URLSearchParams for screenshot states
+   })  -> ui = { st, render, animate(stepFn), flash(text,ms) }
+   animate(step): calls step(dt seconds) every frame and re-renders until step returns false. */
+function mountFigure(cfg){
+  document.title = cfg.title;
+  const style = document.createElement('style'); style.textContent = CORE_CSS; document.head.appendChild(style);
+  document.body.innerHTML = `
+    <header><h1>Fig. ${cfg.fig} — ${cfg.title}</h1><span>${cfg.hint || ''}</span></header>
+    <div class="stage">
+      ${cfg.buttons && cfg.buttons.length ? `<div class="actions" id="btns"><div class="cap">${cfg.buttonsLabel || 'Try it'}</div></div>` : ''}
+      ${cfg.stats ? '<div class="stats" id="stats"></div>' : ''}
+      ${cfg.views ? '<div class="turn"><button class="tb" id="tl" title="Turn around (Q)">⟲</button><span id="vname">front</span><button class="tb" id="tr" title="Turn around (E)">⟳</button></div>' : ''}
+      <svg id="fig" role="img" aria-label="${cfg.title}"><defs id="fdefs"></defs><g id="art" filter="url(#hand)"></g></svg>
+    </div>
+    <div id="readout"></div>
+    ${cfg.idea ? `<p class="idea"><strong>The big idea</strong>${cfg.idea}</p>` : ''}
+    <div class="controls">
+      <div class="ctl"><label for="az">Light direction</label><input id="az" type="range" min="${AZ_MIN}" max="${AZ_MAX}" value="105"></div>
+      <div class="ctl"><label for="wb">Hand-drawn wobble</label><input id="wb" type="range" min="0" max="7" step="0.1" value="2.4"></div>
+      <div class="ctl"><label>Colour</label><div class="row" id="pals"></div></div>
+    </div>`;
+  const st = cfg.state || {};            // kept as the same object, so a figure may hold on to it
+  if (!st.pal) st.pal = cfg.palette || 'mustard';
+  if (st.az == null) st.az = 105;
+  const q = new URLSearchParams(location.search);
+  if (PALS[q.get('pal')]) st.pal = q.get('pal');
+  if (q.has('az')) st.az = Math.min(AZ_MAX, Math.max(AZ_MIN, +q.get('az')));
+  if (cfg.params) cfg.params(st, q);
+  const view0 = cfg.views && q.has('view') ? (+q.get('view') === 2 ? 2 : 0) : 0;
+
+  // frame on the object itself: centred, filling ~60% of the width / ~78% of the height of a 4:3 view.
+  // The cast shadow is allowed to spill outside the frame (svg overflow is visible).
+  const [W,D,H] = cfg.size, pts = [];
+  OX = OY = 0; RC = cfg.center || [W/2, D/2];
+  const turns = cfg.views ? TURNS : [0];
+  for (const v of turns){ VIEW = v; for (const x of [0,W]) for (const y of [0,D]) for (const z of [0,H]) pts.push(P(x,y,z)); }
+  VIEW = 0;
+  const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+  const bw = Math.max(...xs)-Math.min(...xs), bh = Math.max(...ys)-Math.min(...ys);
+  const vbW = Math.max(bw/.6, bh/.78/.75), vbH = vbW*.75;
+  OX = (vbW-bw)/2 - Math.min(...xs); OY = vbH*.05 - Math.min(...ys);   // sit a little high: shadows fall downward
+  const svg = document.getElementById('fig');
+  svg.setAttribute('viewBox', `0 0 ${f(vbW)} ${f(vbH)}`);
+  INK_K = vbW / INK_REF_VB;
+  document.getElementById('fdefs').innerHTML = filterFor(INK_K);
+
+  const art = document.getElementById('art'), readout = document.getElementById('readout');
+  const ui = { st };
+  ui.render = () => { _clipN = 0; document.documentElement.style.setProperty('--accent', PALS[st.pal].l); art.innerHTML = inkScale(cfg.scene(st, PALS[st.pal])); if (!ui._flash) readout.textContent = cfg.readout ? cfg.readout(st) : ''; if (ui.drawStats) ui.drawStats(); };
+  // big numbers in the top-right corner (credit, change, score…); a value that changes gets a little bump
+  const statsEl = document.getElementById('stats'), prevStats = {};
+  ui.drawStats = () => { if (!statsEl) return;
+    const list = cfg.stats(st).filter(Boolean), html = list.map(x => `<div class="stat${x.small ? ' small' : ''}"><div class="k">${x.label}</div><div class="v" data-k="${x.label}">${x.value}</div></div>`).join('');
+    if (statsEl._html !== html){ statsEl._html = html; statsEl.innerHTML = html;
+      statsEl.querySelectorAll('.v').forEach(v => { if (prevStats[v.dataset.k] != null && prevStats[v.dataset.k] !== v.textContent) v.classList.add('bump'); prevStats[v.dataset.k] = v.textContent; }); } };
+  let flashT = 0;
+  ui.flash = (text, ms=1400) => { ui._flash = true; readout.textContent = text; clearTimeout(flashT); flashT = setTimeout(() => { ui._flash = false; ui.render(); }, ms); };
+  ui.animate = step => { let last = performance.now();
+    const loop = now => { const dt = Math.max(0, Math.min(.05,(now-last)/1000)); /* rAF time can precede the start stamp */ last = now; const more = step(dt) !== false; ui.render(); if (more) requestAnimationFrame(loop); };
+    requestAnimationFrame(loop); };
+
+  svg.addEventListener('click', e => { const a = e.target.closest('[data-act]'); if (!a || !cfg.acts || !cfg.acts[a.dataset.act]) return; cfg.acts[a.dataset.act](st, a, ui); ui.render(); });
+  const btns = document.getElementById('btns');
+  const stepEls = [];
+  if (btns) cfg.buttons.forEach((b, i) => {
+    const wrap = document.createElement('div'); wrap.className = 'stepwrap';
+    const el = document.createElement('button'); el.className = 'act';
+    el.innerHTML = `${b.label}${b.choices ? '<span class="car">▾</span>' : ''}`;
+    wrap.appendChild(el); btns.appendChild(wrap); stepEls.push(el);
+    if (!b.choices){ el.onclick = () => { closeChips(); b.onClick(st, ui); ui.render(); }; return; }
+    const chips = document.createElement('div'); chips.className = 'chips'; wrap.appendChild(chips);
+    el.onclick = e => { e.stopPropagation(); const open = !wrap.classList.contains('open'); closeChips();
+      if (!open) return;
+      chips.innerHTML = '';
+      for (const c of b.choices(st)){ const ch = document.createElement('button'); ch.className = 'chip'; ch.textContent = c.label; ch.disabled = !!c.disabled;
+        ch.onclick = ev => { ev.stopPropagation(); closeChips(); c.onClick(st, ui); ui.render(); }; chips.appendChild(ch); }
+      wrap.classList.add('open'); };
+  });
+  function closeChips(){ document.querySelectorAll('.stepwrap.open').forEach(w => w.classList.remove('open')); }
+  document.addEventListener('click', closeChips);
+
+  ui.view = () => VIEW;
+  if (cfg.views){
+    const name = document.getElementById('vname');
+    let busy = false;
+    const setView = v => { VIEW = ((v % 4) + 4) % 4; name.textContent = VIEW_NAMES[VIEW]; ui.render(); };
+    ui.turn = d => { if (busy) return; busy = true; svg.classList.add('flip');
+      setTimeout(() => { const i = TURNS.indexOf(VIEW); setView(TURNS[(i + (d > 0 ? 1 : TURNS.length - 1)) % TURNS.length]); svg.classList.remove('flip'); setTimeout(() => busy = false, 150); }, 140); };
+    document.getElementById('tl').onclick = () => ui.turn(-1);
+    document.getElementById('tr').onclick = () => ui.turn(1);
+    addEventListener('keydown', e => { if (e.target.closest && e.target.closest('input,textarea')) return;
+      if (e.key === 'q' || e.key === 'Q') ui.turn(-1); if (e.key === 'e' || e.key === 'E') ui.turn(1); });
+    // drag sideways on the figure to turn it; a real drag swallows the click that follows
+    let x0 = null, dragged = false;
+    svg.addEventListener('pointerdown', e => { x0 = e.clientX; dragged = false; });
+    addEventListener('pointermove', e => { if (x0 == null) return; const dx = e.clientX - x0;
+      if (Math.abs(dx) > 70){ dragged = true; svg.classList.add('dragging'); ui.turn(dx > 0 ? -1 : 1); x0 = e.clientX; } });
+    addEventListener('pointerup', () => { x0 = null; svg.classList.remove('dragging'); });
+    svg.addEventListener('click', e => { if (dragged){ e.stopPropagation(); e.preventDefault(); dragged = false; } }, true);
+    VIEW = view0; name.textContent = VIEW_NAMES[VIEW];
+  }
+  const az = document.getElementById('az'); az.value = st.az;
+  az.oninput = e => { st.az = +e.target.value; setLight(st.az); ui.render(); };
+  document.getElementById('wb').oninput = e => document.getElementById('wob').setAttribute('scale', (e.target.value * INK_K).toFixed(2));
+  const pals = document.getElementById('pals');
+  for (const [k,p] of Object.entries(PALS)){
+    const b = document.createElement('button'); b.className='sw'; b.title=k; b.style.background=p.l; b.setAttribute('aria-pressed', k===st.pal);
+    b.onclick = () => { st.pal=k; [...pals.children].forEach(c=>c.setAttribute('aria-pressed', c===b)); ui.render(); };
+    pals.appendChild(b);
+  }
+  setLight(st.az); ui.render();
+  return ui;
+}
+</script>
+<script>
+/* ============================================================
+   Fig. 07 — Capsule toy machine (gashapon / gumball style)
+   Units ≈ 1 cm. Base x 0..40 (depth), y 0..40 (width), z 0..55; globe on top, ~97 tall.
+   ============================================================ */
+const W = 40, D = 40, BH = 52, SLAB = 55;          // base box, top slab
+const OUT = rrUV(0, 0, D, BH, 3);
+const CX = 20, CY = 20;                            // vertical axis of collar / globe
+const COLLAR_R = 15, FLOOR = 60;                   // collar ring the globe sits in
+const GR = 19, G = [CX, CY, FLOOR + Math.sqrt(GR*GR - 13.5*13.5)];   // globe centre (meets the floor at r 13.5)
+const CAP_TOP = G[2] + GR - 1.4;
+const PLATE = { y:20, z:31.2, r:10.4 };                // coin / crank plate on the front
+const SLOT = [19.1, 36, 20.9, 41.2];               // vertical coin slot (y0,z0,y1,z1) on the plate
+const CH = { y0:10.5, y1:29.5, z0:4, z1:18.6 };     // capsule exit
+const CHUTE = rrUV(CH.y0, CH.z0, CH.y1, CH.z1, 3.4);
+const HINGE = [W + .6, CH.z1], FLAP_L = CH.z1 - CH.z0 - .6;         // flap hinge (x,z) and length
+const CAP_R = 5.6;                                    // dispensed capsule radius
+const REST = [W + 18, 13, CAP_R];                     // where the capsule comes to rest on the ground
+const CAP_COLS = ['#e2473a', '#f2c230', '#3e86d9', '#38a565', '#8c4bd1', '#f08a2b'];
+const PRIZES = { duck:'Rubber duck', star:'Lucky star', cat:'Lucky cat', robot:'Tin robot', dino:'Tiny dino' };
+const COIN = { l:'#f0d27a', m:'#d2ad4a', d:'#9a7a2a' };
+const VV = norm([1,1,1]);
+const clamp = (v,a=0,b=1) => Math.max(a, Math.min(b, v));
+const lerp = (a,b,t) => a + (b-a)*t;
+const add = (a,b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]];
+const scl = (a,k) => a.map(v => v*k);
+function rng(seed){ return () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const L2 = (() => { const d = Dv(...LIN), l = Math.hypot(...d); return [d[0]/l, d[1]/l]; })();   // screen dir of the prop light
+/* ---------- turning helpers (VIEW 0..3) ---------- */
+const unrot = v => rotV(rotV(rotV(v)));                       // viewer-space direction -> model direction for this view
+const vp = p => [...rotXY(p[0], p[1]), p[2]];                  // model point -> where it sits in turned coordinates
+// draw something that should look the same from every side (prizes, the opened capsule) at model point p
+function asSeen(p, fn){ const v = VIEW, q = vp(p); VIEW = 0; try { return fn(q); } finally { VIEW = v; } }
+// text on the back (x = const, seen from -x) and on the right side (y = const, seen from -y)
+const tF = (o,U,str,size,col,weight) => `<text transform="${txM(o, U, Dv(0,0,-1))}" font-size="${size}" fill="${col}" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-weight="${weight}" letter-spacing=".04em">${str}</text>`;
+const txB = (x,y,z,str,size,col=INK,weight=700) => tF(P(x,y,z), Dv(0,1,0), str, size, col, weight);
+const txR = (x,y,z,str,size,col=INK,weight=700) => tF(P(x,y,z), Dv(-1,0,0), str, size, col, weight);
+const C2 = (c, r, fillC, extra='') => `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(r)}" fill="${fillC}" ${extra}/>`;
+
+/* ---------- spheres ---------- */
+// a ball: orthographic sphere = circle of r·1.2247; base tone + lit offset disc + glint
+function ball(c, r, m, w=.9){
+  const [X,Y] = P(...c), R = r*1.2247;
+  return C2([X,Y], R, m.m, `stroke="${INK}" stroke-width="${w}"`)
+       + C2([X + L2[0]*R*.22, Y + L2[1]*R*.22], R*.68, m.l)
+       + C2([X + L2[0]*R*.5, Y + L2[1]*R*.5], R*.16, '#ffffff', 'opacity=".75"');
+}
+// screen geometry of a hemisphere boundary: pole direction p (3D) -> e2 (screen dir of p), e1, minor axis of the rim ellipse
+function rimFrame(c, r, p){
+  const [X,Y] = P(...c), R = r*1.2247, d = Dv(...p), l = Math.hypot(d[0], d[1]);
+  const e2 = l > 1e-6 ? [d[0]/l, d[1]/l] : [0,1], e1 = [-e2[1], e2[0]];
+  const mn = R*Math.abs(dot(rotV(p), VV));
+  const at = (a, rr, ry) => [X + rr*Math.cos(a)*e1[0] + ry*Math.sin(a)*e2[0], Y + rr*Math.cos(a)*e1[1] + ry*Math.sin(a)*e2[1]];
+  const arc = (a0, a1, ry, n=18) => Array.from({length:n+1}, (_,i) => at(a0 + (a1-a0)*i/n, R, ry));
+  return { X, Y, R, mn, arc };
+}
+const poly = (pts, close=true) => 'M' + pts.map(q => f(q[0]) + ' ' + f(q[1])).join('L') + (close ? 'Z' : '');
+// shading overlay for any sphere: darker crescent away from the light + glint
+function sphereShade(X, Y, R, glint=true){
+  const o = [X + L2[0]*R*.11, Y + L2[1]*R*.11];
+  return `<path d="M${f(X-R)} ${f(Y)}a${f(R)} ${f(R)} 0 1 0 ${f(2*R)} 0a${f(R)} ${f(R)} 0 1 0 ${f(-2*R)} 0Z M${f(o[0]-R*.88)} ${f(o[1])}a${f(R*.88)} ${f(R*.88)} 0 1 0 ${f(2*R*.88)} 0a${f(R*.88)} ${f(R*.88)} 0 1 0 ${f(-2*R*.88)} 0Z" fill="#1a1020" fill-rule="evenodd" opacity=".16"/>`
+       + (glint ? C2([X + L2[0]*R*.5, Y + L2[1]*R*.52], R*.17, '#ffffff', 'opacity=".9"')
+                + C2([X + L2[0]*R*.18 + L2[1]*R*.35, Y + L2[1]*R*.18 - L2[0]*R*.35], R*.07, '#ffffff', 'opacity=".7"') : '');
+}
+// a closed two-tone capsule: k = direction of the coloured half's pole
+function capsuleArt(c, r, k, col, w=.9){
+  const kv = dot(rotV(k), VV), away = kv < 0 ? k : scl(k, -1);
+  const { X, Y, R, mn, arc } = rimFrame(c, r, away);
+  const cm = matOf(col), pale = mix(col, '#ffffff', .8), inner = mix(col, '#ffffff', .3);
+  const crescent = poly([...arc(0, Math.PI, R), ...arc(Math.PI, 0, mn)]);
+  const ell = poly(arc(0, 2*Math.PI, mn, 32));
+  let s = '';
+  if (kv < 0){   // coloured half points away (usual: coloured bottom seen from above) -> clear dome on top
+    s += C2([X,Y], R, pale) + fill(ell, inner) + fill(crescent, cm.l);
+    s += `<path d="${poly(arc(Math.PI, 2*Math.PI, mn), false)}" fill="none" stroke="${cm.d}" stroke-width=".5" opacity=".55"/>`;
+  } else {       // coloured half faces the viewer, the clear half is the far crescent
+    s += C2([X,Y], R, cm.l) + fill(crescent, pale);
+  }
+  s += sphereShade(X, Y, R);
+  s += `<path d="${poly(arc(0, Math.PI, mn), false)}" fill="none" stroke="${INK}" stroke-width=".55"/>`;
+  s += C2([X,Y], R, 'none', `stroke="${INK}" stroke-width="${w}"`);
+  return s;
+}
+// half a capsule shell (open), pole p: outside visible on the half-disk, inside through the rim ellipse when p points away
+function hemiArt(c, r, p, outC, inC, w=.9, under=''){
+  const pv = dot(rotV(p), VV), { X, Y, R, mn, arc } = rimFrame(c, r, p);
+  const half = poly(arc(0, Math.PI, R)), ell = poly(arc(0, 2*Math.PI, mn, 32));
+  let s = '';
+  if (pv < 0){
+    s += fill(half, outC) + fill(ell, inC) + under;
+    s += fill(poly([...arc(0, Math.PI, R), ...arc(Math.PI, 0, mn)]), outC);
+    s += `<path d="${poly([...arc(0, Math.PI, R), ...arc(Math.PI, 0, mn)])}" fill="#1a1020" opacity=".12"/>`;
+    s += C2([X + L2[0]*R*.45, Y + L2[1]*R*.45], R*.12, '#ffffff', 'opacity=".8"');
+    s += ink(poly(arc(0, Math.PI, R), false), w) + `<path d="${ell}" fill="none" stroke="${INK}" stroke-width="${w*.7}"/>`;
+  } else {
+    s += fill(half, outC) + fill(ell, outC) + under;
+    s += ink(poly(arc(0, Math.PI, R), false), w) + ink(poly(arc(Math.PI, 2*Math.PI, mn), false), w);
+  }
+  return s;
+}
+
+/* ---------- the capsule pile inside the globe ---------- */
+const fits = (placed, p, r) => Math.hypot(p[0]-CX, p[1]-CY, p[2]-G[2]) <= GR - r - .6 && p[2] >= FLOOR + r
+  && placed.every(o => Math.hypot(o.p[0]-p[0], o.p[1]-p[1], o.p[2]-p[2]) >= o.r + r - .15);
+// let the pile fall into gaps: each capsule (lowest first) takes the lowest free spot near where it was
+function settle(list, rnd){
+  const placed = [];
+  for (const c of list.slice().sort((a,b) => a.p[2] - b.p[2])){
+    let best = fits(placed, c.p, c.r) ? c.p : null;
+    for (let k=0;k<160;k++){
+      const p = [c.p[0] + (rnd()-.5)*6, c.p[1] + (rnd()-.5)*6, c.p[2] - rnd()*5 + .5];
+      if ((!best || p[2] < best[2]) && fits(placed, p, c.r)) best = p;
+    }
+    for (let dz=0; !best && dz<30; dz+=.25){ const p = [c.p[0], c.p[1], c.p[2]+dz]; if (fits(placed, p, c.r)) best = p; }
+    placed.push({ ...c, p:best || c.p });
+  }
+  return placed;
+}
+// a fresh heap: drop each capsule into the lowest free spot of many random tries
+function freshPile(seed=7, n=24){
+  const rnd = rng(seed), placed = [];
+  for (let i=0;i<n;i++){
+    const r = 3.7 + rnd()*.5; let best = null;
+    for (let k=0;k<600;k++){
+      const a = rnd()*2*Math.PI, d = Math.sqrt(rnd())*(GR - r), p = [CX + Math.cos(a)*d, CY + Math.sin(a)*d, FLOOR + r + rnd()*30];
+      if ((!best || p[2] < best[2]) && fits(placed, p, r)) best = p;
+    }
+    const th = Math.acos(lerp(-1, .35, rnd())), ph = rnd()*2*Math.PI;   // mostly coloured half down
+    placed.push({ id:i, r, p:best, col:CAP_COLS[Math.floor(rnd()*CAP_COLS.length)], k:[Math.sin(th)*Math.cos(ph), Math.sin(th)*Math.sin(ph), Math.cos(th)] });
+  }
+  return placed;
+}
+
+/* ---------- prizes (local base b = bottom centre) ---------- */
+const bb = (c, u, v) => [c[0] + u*.7071, c[1] - u*.7071, c[2] + v];     // billboard plane facing the viewer
+const bbPts = (c, uv) => uv.map(([u,v]) => bb(c, u, v));
+const dot2 = (c, r=.36, col=INK) => { const q = P(...c); return C2(q, r, col); };
+function prizeArt(kind, b, k=1.3){
+  // local helpers, everything scaled by k
+  const up = dz => add(b, [0,0,dz*k]), Q = (c,u,v) => bb(c, u*k, v*k);
+  const QP = (c, uv) => uv.map(([u,v]) => Q(c,u,v)), SP = (c, uv) => QP(c, uv).map(q => P(...q));
+  const B = (c, r, m, w=.9) => ball(c, r*k, m, w), dotK = (c, r, col) => dot2(c, r*k, col);
+  let s = '';
+  if (kind === 'duck'){
+    const Y = matOf('#f6c935'), c0 = up(2.6), c1 = Q(c0, 1.2, 3);
+    s += shape(QP(c0, [[-2,.5],[-3.7,2.5],[-1.4,1.7]]), Y.m, .8);
+    s += B(c0, 2.8, Y) + ink(poly(SP(c0, [[-1.7,.5],[-.3,-.6],[.9,.3]]), false), .7);
+    s += B(c1, 1.95, Y);
+    s += shape(QP(c1, [[1.2,.1],[3.3,-.3],[1.2,-.9]]), '#f08a2b', .7);
+    s += dotK(Q(c1, .55, .55), .34) + dotK(Q(c1, -.3, -.5), .42, '#f3a3a0');
+  } else if (kind === 'star'){
+    const c = up(4.4), pts = [];
+    for (let i=0;i<10;i++){ const a = Math.PI/2 + i*Math.PI/5, rr = i%2 ? 1.6 : 3.7; pts.push([rr*Math.cos(a), rr*Math.sin(a)]); }
+    s += shape(QP(add(c, [-.9*k,0,.3*k]), pts), '#d49c1f', 1);
+    s += shape(QP(c, pts), '#ffd84a', 1.1);
+    s += dotK(Q(c, -.8, .4), .32) + dotK(Q(c, .8, .4), .32);
+    s += dotK(Q(c, -1.4, -.2), .38, '#f3a3a0') + dotK(Q(c, 1.4, -.2), .38, '#f3a3a0');
+    s += ink(poly(SP(c, [[-.6,-.5],[0,-1],[.6,-.5]]), false), .6);
+    s += fill(poly(SP(c, [[-1.4,1.9],[-.9,2.4],[-1.7,2.6]])), '#ffffff', 'opacity=".8"');
+  } else if (kind === 'cat'){
+    const O = matOf('#f2a65a'), c = up(3.4);
+    for (const sx of [-1, 1]){
+      s += shape(QP(c, [[sx*2.7,1.2],[sx*2.4,4.3],[sx*.6,2.5]]), O.m, .9);
+      s += fill(poly(SP(c, [[sx*2.3,1.9],[sx*2.15,3.5],[sx*1.2,2.5]])), '#f3a3a0');
+    }
+    s += B(c, 3.1, O);
+    s += fill(poly(SP(c, [[-.9,3],[0,2.2],[.9,3],[0,3.6]])), mix(O.m,'#000000',.12));
+    for (const sx of [-1, 1]){
+      s += ink(poly(SP(c, [[sx*1.6,.4],[sx*1.1,.95],[sx*.6,.4]]), false), .75);
+      s += ink(poly(SP(c, [[sx*1.7,-.6],[sx*3.6,-.2]]), false), .45);
+      s += ink(poly(SP(c, [[sx*1.7,-1],[sx*3.5,-1.3]]), false), .45);
+      s += dotK(Q(c, sx*1.9, -.35), .45, '#f37f8a');
+    }
+    s += shape(QP(c, [[-.45,-.3],[.45,-.3],[0,-.8]]), '#e2617a', .4);
+    s += ink(poly(SP(c, [[-.8,-1.1],[-.4,-1.4],[0,-1],[.4,-1.4],[.8,-1.1]]), false), .5);
+  } else if (kind === 'robot'){
+    const Hd = matOf('#9fc0cf'), [x,y,z] = b, K = v => v*k;
+    s += box(x-K(1.9), y-K(1.9), z, x+K(1.9), y+K(1.9), z+K(3.6), METAL, toneI, .9);
+    s += shape(on(PX(x+K(1.9)+.05), rectUV(y-K(1.1), z+K(1), y+K(1.1), z+K(2.6))), '#1d2a26', .5);
+    s += dot2([x+K(1.9)+.1, y+K(.5), z+K(1.8)], K(.3), '#e2483d') + dot2([x+K(1.9)+.1, y-K(.4), z+K(1.8)], K(.3), '#43c25c');
+    s += box(x-K(1.6), y-K(1.6), z+K(3.6), x+K(1.6), y+K(1.6), z+K(6.6), Hd, toneI, .9);
+    for (const dy of [-.8, .8]) s += shape(on(PX(x+K(1.6)+.05), ellUV(y+K(dy), z+K(5.4), K(.55), K(.55), 10)), '#ffd84a', .5);
+    s += line([[x+K(1.6)+.05, y-K(.8), z+K(4.3)],[x+K(1.6)+.05, y+K(.8), z+K(4.3)]], .6);
+    s += line([[x, y, z+K(6.6)],[x, y, z+K(8.3)]], .8) + ball([x, y, z+K(8.6)], K(.65), matOf('#e2483d'), .6);
+  } else if (kind === 'dino'){
+    const Gm = matOf('#5cc46a'), c0 = up(2.6), c1 = Q(c0, 1, 3.5);
+    s += shape(QP(c0, [[-1.6,-.4],[-4.6,-1.6],[-1.8,1]]), Gm.m, .8);
+    s += shape(QP(c1, [[-1.4,1.4],[-1.6,3.2],[-.4,2]]), '#f6c935', .7);
+    s += shape(QP(c0, [[-2.4,1.6],[-3.4,3.2],[-1.6,2.6]]), '#f6c935', .7);
+    s += shape(QP(c0, [[-2.8,-.2],[-4.1,1],[-2.6,1]]), '#f6c935', .7);
+    s += B(c0, 2.9, Gm);
+    s += fill(poly(SP(Q(c0,.7,-.5), ellUV(0,0,1.4,1.6,16))), '#d9efb0');
+    s += B(c1, 2.2, Gm);
+    s += dotK(Q(c1, .7, .5), .36) + dotK(Q(c1, 1.4, -.4), .2) + dotK(Q(c1, -.2, -.4), .4, '#f3a3a0');
+  }
+  return s;
+}
+
+/* ---------- state ---------- */
+const st = { pal:'blush', coin:false, coinT:null, crank:0, turn:null, jig:null, roll:null, out:null, pile:freshPile(), served:0 };
+const PRIZE_KEYS = Object.keys(PRIZES);
+
+/* ---------- the dispensed capsule's path: chute -> lip -> drop -> bounce -> rest ---------- */
+function rollPose(u){
+  const x0 = W - 10, xLip = W + 5, xLand = W + 9.5, z0 = CH.z0 + CAP_R;
+  let x, z;
+  if (u < .36){ const t = u/.36; x = lerp(x0, xLip, t*t*(1.6 - .6*t)); z = z0; }
+  else if (u < .54){ const t = (u-.36)/.18; x = lerp(xLip, xLand, t); z = z0 - CH.z0*t*t; }
+  else { const t = (u-.54)/.46, k = 1 - Math.pow(1-t, 2.2); x = lerp(xLand, REST[0], k);
+         z = CAP_R + (t < .45 ? 2.4*Math.sin(Math.PI*t/.45) : t < .7 ? .6*Math.sin(Math.PI*(t-.45)/.25) : 0); }
+  const a = (x - x0)/(REST[0] - x0) * 2*Math.PI;
+  const y = u < .54 ? 20 : lerp(20, REST[1], 1 - Math.pow(1 - (u-.54)/.46, 2.2));
+  return { c:[x, y, z], k:[-Math.sin(a), 0, -Math.cos(a)] };
+}
+function flapAngle(){
+  if (st.roll == null) return 0;
+  const u = st.roll.t, D2R = Math.PI/180;
+  if (u < .12) return 0;
+  if (u < .3) return 76*ease((u-.12)/.18)*D2R;
+  if (u < .58) return 76*D2R;
+  const t = (u-.58)/.42;
+  return 76*D2R*Math.max(0, Math.cos(t*Math.PI*1.5)*Math.exp(-3*t)*(1-t) + (1-t)*(t<.33?1-3*t:0)*0);
+}
+
+/* ---------- pieces ---------- */
+function crankArt(theta){
+  const hub = [PLATE.y, PLATE.z], cs = Math.cos(theta), sn = Math.sin(theta);
+  const rot = ([a, b]) => [hub[0] + a*cs - b*sn, hub[1] + a*sn + b*cs];
+  const wing = rrUV(-10.5, -2.7, 10.5, 2.7, 2.7, 6).map(rot);
+  let s = cylX(W+1.2, W+3.2, hub[0], hub[1], 4.6, METAL, toneI, 1.1, 24);
+  s += loft(on(PX(W+3.2), wing), on(PX(W+5.4), wing), n => toneI(n, METAL));
+  s += fill(pd(on(PX(W+5.4), wing)), METAL.l) + hullInk([...on(PX(W+3.2), wing), ...on(PX(W+5.4), wing)], 1.3) + ink(pd(on(PX(W+5.4), wing)), .9);
+  s += `<path d="${pd([[W+5.45, ...rot([-7.5,0])],[W+5.45, ...rot([-2.6,0])]], false)}" stroke="#ffffff" stroke-width="1" opacity=".7" stroke-linecap="round"/>`;
+  s += cylX(W+5.4, W+6.4, hub[0], hub[1], 2.2, METAL, toneI, .9, 16);
+  const kn = rot([7.6, 0]), m = PALS[st.pal];
+  s += cylX(W+5.4, W+11.5, kn[0], kn[1], 2.5, { l:m.l, m:m.m, d:m.d }, toneI, 1.1, 20);
+  s += fill(pd(on(PX(W+11.55), ellUV(kn[0]-.5, kn[1]+.7, .9, .7, 10))), '#ffffff', 'opacity=".7"');
+  return s;
+}
+function coinArt(){
+  if (st.coinT == null) return '';
+  const t = st.coinT, zc = (SLOT[1] + SLOT[3])/2;
+  let x, z;
+  if (t < .45){ const k = ease(t/.45); x = lerp(W + 12, W + 4, k); z = lerp(zc + 8, zc, k) + 3*Math.sin(Math.PI*k); }
+  else { const k = ease((t-.45)/.55); x = lerp(W + 4, W - 2, k); z = zc; }
+  const yf = facing([0,1,0]) ? 1 : -1;            // the coin face toward the viewer
+  const A = on(PY(20 - .4*yf), ellUV(x, z, 2.6, 2.6, 18)), B = on(PY(20 + .4*yf), ellUV(x, z, 2.6, 2.6, 18));
+  let s = loft(A, B, n => toneI(n, COIN)) + fill(pd(B), COIN.l) + ink(sp(hull([...A,...B].map(p => P(...p)))), .8) + ink(pd(on(PY(20 + .45*yf), ellUV(x, z, 1.6, 1.6, 14))), .45);
+  return clipTo(on(PY(20), rectUV(W + 1.25, 0, W + 40, 120)), s);
+}
+function flapArt(){
+  const ph = flapAngle(), d = [Math.sin(ph), 0, -Math.cos(ph)], n = [Math.cos(ph), 0, Math.sin(ph)], t = 1;
+  const Q = (s, w, y) => [HINGE[0] + s*d[0] + w*n[0], y, HINGE[1] + s*d[2] + w*n[2]];
+  const y0 = CH.y0 + .6, y1 = CH.y1 - .6, L = FLAP_L, MAT = { l:'#6a6460', m:'#4b4642', d:'#2e2b28' };
+  let s = '';
+  if (vis(d)) s += shape([Q(L,0,y0),Q(L,0,y1),Q(L,t,y1),Q(L,t,y0)], toneI(d, MAT), .9);
+  s += fill(pd([Q(0,t,y0),Q(0,t,y1),Q(L,t,y1),Q(L,t,y0)]), MAT.m, 'fill-opacity=".42"') + ink(pd([Q(0,t,y0),Q(0,t,y1),Q(L,t,y1),Q(L,t,y0)]), 1.1);
+  const ys = facing([0,1,0]) ? y1 : y0;            // the flap edge toward the viewer
+  s += shape([Q(0,0,ys),Q(L,0,ys),Q(L,t,ys),Q(0,t,ys)], MAT.l, .7);
+  s += fill(pd([Q(L*.2,t+.05,y0+2),Q(L*.2,t+.05,y0+5),Q(L*.85,t+.05,y0+10),Q(L*.85,t+.05,y0+7)]), '#ffffff', 'opacity=".3"');
+  s += shape([Q(L-2.4,t+.05,16.5),Q(L-2.4,t+.05,23.5),Q(L-1,t+.05,23.5),Q(L-1,t+.05,16.5)], MAT.d, .6);
+  s += cylX(W, W+1.8, CH.y0 + .2, CH.z1, .9, METAL, toneI, .7, 10) + cylX(W, W+1.8, CH.y1 - .2, CH.z1, .9, METAL, toneI, .7, 10);
+  return s;
+}
+
+/* ---------- globe ---------- */
+function globeLight(){   // screen direction toward the sun (follows the light slider; L is already in viewer space)
+  const d = [(L[0]-L[1])*C, (L[0]+L[1])*S - L[2]], l = Math.hypot(...d); return [d[0]/l, d[1]/l];
+}
+function pileNow(){
+  const T = st.turn;
+  let list = st.pile.map(c => ({ ...c }));
+  if (T){
+    const t = T.t;
+    if (t >= .5){ const k = ease(clamp((t - .5)/.45));
+      list = T.next.map(c => { const o = st.pile.find(q => q.id === c.id); return { ...c, p:o.p.map((v,i) => lerp(v, c.p[i], k)) }; }); }
+    const amp = .55*Math.sin(Math.PI*t);
+    list.forEach(c => { const h = c.id*1.7; c.p = [c.p[0] + amp*Math.sin(t*23 + h), c.p[1] + amp*Math.cos(t*19 + h*1.3), c.p[2] + amp*.5*Math.abs(Math.sin(t*29 + h))]; });
+  }
+  return list;
+}
+function globeArt(){
+  const [X, Y] = P(...G), R = GR*1.2247, l = globeLight();
+  let s = `<clipPath id="cGlobe"><circle cx="${f(X)}" cy="${f(Y)}" r="${f(R - .6)}"/></clipPath>`;
+  let inn = C2([X,Y], R, '#c9e3ea', 'opacity=".6"');
+  // far wall of the glass: a soft back rim
+  inn += `<path d="M${f(X-R)} ${f(Y)}a${f(R)} ${f(R)} 0 1 0 ${f(2*R)} 0a${f(R)} ${f(R)} 0 1 0 ${f(-2*R)} 0Z M${f(X-R*.93)} ${f(Y+R*.03)}a${f(R*.93)} ${f(R*.93)} 0 1 0 ${f(2*R*.93)} 0a${f(R*.93)} ${f(R*.93)} 0 1 0 ${f(-2*R*.93)} 0Z" fill="#b6d4dc" fill-rule="evenodd" opacity=".35"/>`;
+  const caps = pileNow().sort((a,b) => depthOf(a.p) - depthOf(b.p));
+  for (const c of caps) inn += capsuleArt(c.p, c.r, c.k, c.col, .85);
+  s += `<g clip-path="url(#cGlobe)">${inn}</g>`;
+  // front glass: tint, shadow-side rim, big curved highlight + glint
+  let gl = C2([X,Y], R, '#cfe9f0', 'opacity=".16"');
+  const so = [X + l[0]*R*.16, Y + l[1]*R*.16];
+  gl += `<path d="M${f(X-R)} ${f(Y)}a${f(R)} ${f(R)} 0 1 0 ${f(2*R)} 0a${f(R)} ${f(R)} 0 1 0 ${f(-2*R)} 0Z M${f(so[0]-R*.9)} ${f(so[1])}a${f(R*.9)} ${f(R*.9)} 0 1 0 ${f(2*R*.9)} 0a${f(R*.9)} ${f(R*.9)} 0 1 0 ${f(-2*R*.9)} 0Z" fill="#4f7d8a" fill-rule="evenodd" opacity=".42"/>`;
+  // curved highlight: a band inside the rim on the lit side
+  const ang = Math.atan2(l[1], l[0]), band = [];
+  const arcBand = (a0, a1, r0, th) => { const b = [];
+    for (let i=0;i<=24;i++){ const a = a0 + (a1-a0)*i/24; b.push([X + Math.cos(a)*R*r0, Y + Math.sin(a)*R*r0]); }
+    for (let i=24;i>=0;i--){ const a = a0 + (a1-a0)*i/24, w = Math.pow(Math.sin(Math.PI*i/24), .7); b.push([X + Math.cos(a)*R*(r0 - th*w), Y + Math.sin(a)*R*(r0 - th*w)]); }
+    return poly(b); };
+  gl += fill(arcBand(ang - 1.5, ang + .6, .9, .25), '#ffffff', 'opacity=".92"');
+  gl += fill(arcBand(ang + .95, ang + 1.25, .9, .1), '#ffffff', 'opacity=".7"');
+  const g1 = [X + Math.cos(ang + 1.25)*R*.72, Y + Math.sin(ang + 1.25)*R*.72];
+  gl += `<ellipse cx="${f(g1[0])}" cy="${f(g1[1])}" rx="${f(R*.075)}" ry="${f(R*.045)}" transform="rotate(${f((ang+1.25)*180/Math.PI + 90)} ${f(g1[0])} ${f(g1[1])})" fill="#ffffff" opacity=".7"/>`;
+  const ref = [];   // faint reflection on the shadow side
+  for (let i=0;i<=14;i++){ const a = ang + Math.PI - .55 + 1.1*i/14; ref.push([X + Math.cos(a)*R*.8, Y + Math.sin(a)*R*.8]); }
+  gl += `<path d="${poly(ref, false)}" fill="none" stroke="#ffffff" stroke-width="1.1" stroke-linecap="round" opacity=".45"/>`;
+  s += act('globe', `<g pointer-events="none">${gl}</g>` + C2([X,Y], R, 'transparent'));
+  s += C2([X,Y], R, 'none', `stroke="${INK}" stroke-width="2.4"`);
+  return s;
+}
+
+/* ---------- the dispensed capsule (rolling, resting or open) ---------- */
+function groundCapsule(){
+  if (st.roll){
+    const { c, k } = rollPose(st.roll.t);
+    return capsuleArt(c, CAP_R, k, st.roll.col, 1);
+  }
+  if (!st.out) return '';
+  // the resting / opened capsule is shown the same way from every side (the prize faces whoever looks)
+  return asSeen(REST, restCapsule);
+}
+function restCapsule(c){
+  const o = st.out.open, col = st.out.col, cm = matOf(col), pale = mix(col, '#ffffff', .8);
+  if (o <= 0) return act('capsule', capsuleArt(c, CAP_R, [0,0,-1], col, 1));
+  const ph = 112*ease(clamp(o))*Math.PI/180, hd = norm([1,-1,0]);
+  const p = add(scl([0,0,1], Math.cos(ph)), scl(hd, Math.sin(ph)));
+  const h = add(c, scl(hd, CAP_R)), ctop = add(h, add(scl(hd, -CAP_R*Math.cos(ph)), [0,0,CAP_R*Math.sin(ph)]));
+  const top = hemiArt(ctop, CAP_R, p, pale, mix(col, '#ffffff', .62), .9);
+  const prizeZ = c[2] - 4.2 + 3.2*ease(clamp((o - .25)/.75));
+  // bottom bowl: inside (rim ellipse), prize, then the outer front crescent over the prize's foot
+  const { X, Y, R, mn, arc } = rimFrame(c, CAP_R, [0,0,-1]);
+  const ell = poly(arc(0, 2*Math.PI, mn, 32));
+  let bowl = fill(ell, mix(col, '#000000', .12)) + `<path d="${ell}" fill="none" stroke="${INK}" stroke-width=".7"/>`;
+  bowl += prizeArt(st.out.prize, [c[0], c[1], prizeZ]);
+  const cres = poly([...arc(0, Math.PI, R), ...arc(Math.PI, 0, mn)]);
+  bowl += fill(cres, cm.l);
+  bowl += sphereShade(X, Y, R, false).replace('opacity=".16"', 'opacity=".16" clip-path="url(#cBowl)"');
+  bowl += `<clipPath id="cBowl"><path d="${cres}"/></clipPath>`;
+  bowl += C2([X + L2[0]*R*.3 + R*.35, Y + R*.55], R*.11, '#ffffff', 'opacity=".75"');
+  bowl += ink(cres, 1);
+  return act('capsule', bowl + top);
+}
+
+/* ---------- the faces of the base ---------- */
+// left side (+y): GACHA decal with three capsules
+function sideLeftArt(m){
+  const sideM = tone([0,1,0], m), decal = mix(sideM, '#ffffff', .14);
+  let s = shape(on(PY(D+.2), rrUV(5, 9, W-5, 43, 6)), decal, 1.2);
+  s += txY(W/2, D+.3, 30, 'GACHA', 8.4, mix(sideM, '#000000', .4), 800);
+  for (const [x, z, col] of [[11, 18, '#e2473a'], [20, 16.5, '#f2c230'], [29, 18, '#3e86d9']]){
+    const ring = on(PY(D+.3), ellUV(x, z, 3, 3, 20)), lowH = on(PY(D+.3), [...arcUV(x, z, 3, 180, 360, 10)]);
+    s += fill(pd(ring), mix(col, '#ffffff', .75)) + fill(pd(lowH), col) + ink(pd(ring), .8) + ink(pd(on(PY(D+.3), [[x-3, z], [x+3, z]]), false), .5);
+  }
+  return s;
+}
+// right side (−y): the same decal style, a different doodle — a smiling capsule with sparkles
+function sideRightArt(m){
+  const sf = tone([0,-1,0], m), decal = mix(sf, '#ffffff', .14), Y = PY(-.3), on3 = uv => on(Y, uv);
+  let s = shape(on(PY(-.2), rrUV(5, 9, W-5, 43, 6)), decal, 1.2);
+  s += txR(W/2, -.3, 36, 'GACHA', 6.6, mix(sf, '#000000', .4), 800);
+  const cx = W/2, cz = 21, r = 7.2, col = '#38a565';
+  s += fill(pd(on3(ellUV(cx, cz, r, r, 28))), mix(col, '#ffffff', .78));
+  s += fill(pd(on3(arcUV(cx, cz, r, 180, 360, 14))), col);
+  s += ink(pd(on3(ellUV(cx, cz, r, r, 28))), 1) + ink(pd(on3([[cx-r, cz], [cx+r, cz]]), false), .6);
+  s += fill(pd(on3(arcUV(cx - 2.6, cz + 3.6, 1.6, 100, 170, 6).concat([[cx - 2.6, cz + 3.6]]))), '#ffffff', 'opacity=".75"');
+  for (const sx of [-1, 1]){
+    s += fill(pd(on3(ellUV(cx + sx*2.5, cz + 3.2, .75, .95, 10))), INK);
+    s += fill(pd(on3(ellUV(cx + sx*4.5, cz + 1.4, 1.1, .7, 10))), '#f3a3a0');
+  }
+  s += ink(pd(on3(arcUV(cx, cz + 2.4, 1.5, 200, 340, 8)), false), .7);
+  // sparkles (four-point stars) and a couple of dots
+  const star = (x, z, a, c) => { const p = []; for (let i=0;i<8;i++){ const ang = i*Math.PI/4, rr = i%2 ? a*.32 : a; p.push([x + rr*Math.cos(ang), z + rr*Math.sin(ang)]); } return shape(on3(p), c, .6); };
+  s += star(9.5, 29.5, 2.6, '#f2c230') + star(31, 14, 2.1, '#3e86d9') + star(30.5, 28.5, 1.6, '#e2473a');
+  s += fill(pd(on3(ellUV(10.5, 15, .7, .7, 8))), mix(sf, '#000000', .35)) + fill(pd(on3(ellUV(33, 22, .55, .55, 8))), mix(sf, '#000000', .35));
+  return s;
+}
+// back (−x): service door with key lock + REFILL label, maker's sticker, coin-box hatch, corner screws
+function backArt(m){
+  const bf = tone([-1,0,0], m), X = x => PX(-x), dk = mix(bf, '#000000', .3);
+  const screw = (y, z, r=.75) => shape(on(X(.25), ellUV(y, z, r, r, 10)), METAL.m, .6) + ink(pd(on(X(.3), [[y - r*.7, z], [y + r*.7, z]]), false), .45);
+  let s = '';
+  // service door
+  s += shape(on(X(.15), rrUV(5, 17, 35, 48.5, 2.4)), mix(bf, '#ffffff', .06), 1.4);
+  s += `<path d="${pd(on(X(.2), rrUV(6.3, 18.3, 33.7, 47.2, 1.6)))}" fill="none" stroke="${dk}" stroke-width=".7"/>`;
+  for (const z of [21, 42.5]) s += shape(on(X(.3), rectUV(3.7, z, 6.3, z + 3.6)), METAL.m, .7) + ink(pd(on(X(.35), [[5, z], [5, z + 3.6]]), false), .45);
+  // REFILL label
+  s += shape(on(X(.3), rrUV(11, 39.6, 25, 45, 1.2)), '#fff4d6', .9);
+  s += txB(-.45, 18, 41, 'REFILL', 3.4, m.d, 800);
+  // key lock: a short metal barrel with a keyhole
+  { const ly = 30, lz = 32, A = on(X(.1), ellUV(ly, lz, 2.2, 2.2, 18)), B = on(X(1.3), ellUV(ly, lz, 2.2, 2.2, 18));
+    s += loft(A, B, n => toneI(n, METAL)) + fill(pd(B), toneI([-1,0,0], METAL)) + hullInk([...A, ...B], 1) + ink(pd(B), .7);
+    s += ink(pd(on(X(1.35), ellUV(ly, lz, 1.5, 1.5, 16))), .4);
+    s += fill(pd(on(X(1.4), ellUV(ly, lz + .45, .5, .5, 10))), '#26231f') + fill(pd(on(X(1.4), rectUV(ly - .25, lz - 1, ly + .25, lz + .45))), '#26231f'); }
+  // maker's sticker
+  s += shape(on(X(.3), rectUV(8.5, 21, 22.5, 29.5)), '#f7f3ea', .7);
+  s += fill(pd(on(X(.35), rectUV(8.5, 27.6, 22.5, 29.5))), '#e2473a');
+  s += txB(-.45, 15.5, 25.7, 'COLORFIG CO.', 1.7, INK, 800);
+  s += txB(-.45, 15.5, 23.7, 'MODEL CG-07', 1.35, '#5b554a', 700);
+  s += txB(-.45, 15.5, 21.9, 'No. 0723 · 100¥', 1.2, '#5b554a', 600);
+  // coin-box hatch
+  s += shape(on(X(.2), rrUV(9, 3.6, 31, 13.4, 1.4)), METAL.m, 1.1);
+  s += ink(pd(on(X(.25), rrUV(10, 4.6, 30, 12.4, 1))), .45);
+  s += shape(on(X(.3), rrUV(12.5, 7, 21.5, 9, 1)), '#26231f', .6);
+  s += txB(-.4, 17, 10.3, 'COIN BOX', 1.6, '#4a4540', 800);
+  s += shape(on(X(.3), ellUV(26.5, 8.5, 1.3, 1.3, 14)), METAL.l, .7) + fill(pd(on(X(.35), rectUV(26.3, 7.7, 26.7, 9.3))), '#26231f');
+  for (const [y, z] of [[10.2, 5.1], [29.8, 5.1], [10.2, 11.9], [29.8, 11.9]]) s += screw(y, z, .45);
+  // corner screws of the back panel
+  for (const [y, z] of [[2.6, 2.6], [37.4, 2.6], [2.6, 49.4], [37.4, 49.4]]) s += screw(y, z);
+  return s;
+}
+
+/* ---------- scene ---------- */
+// is a free-standing point (outside the base's footprint) in front of the machine in this view?
+const inFront = p => (p[0] > W && facing([1,0,0])) || (p[0] < 0 && facing([-1,0,0])) || (p[1] > D && facing([0,1,0])) || (p[1] < 0 && facing([0,-1,0]));
+function scene(st, m){
+  let s = '';
+  const sph = [];
+  for (let i=0;i<16;i++){ const a = i/16*2*Math.PI; for (const zz of [-.6, 0, .6, .9]) { const rr = GR*Math.sqrt(1 - zz*zz); sph.push([G[0] + rr*Math.cos(a), G[1] + rr*Math.sin(a), G[2] + GR*zz]); } }
+  const shadowPts = [...on(PX(0), OUT), ...on(PX(W), OUT), [-1.5,-1.5,SLAB],[41.5,-1.5,SLAB],[41.5,41.5,SLAB],[-1.5,41.5,SLAB], ...sph, [CX,CY,CAP_TOP+4]];
+  s += castShadow(shadowPts);
+  const cap = st.roll ? rollPose(st.roll.t).c : st.out ? REST : null;
+  if (cap && (!st.roll || st.roll.t > .45)) s += castShadow(ellUV(cap[0], cap[1], CAP_R*.95, CAP_R*.95, 16).map(([x,y]) => [x, y, Math.max(0, cap[2] - CAP_R)]));
+
+  const front = facing([1,0,0]), F = PX(W), fr = tone([1,0,0], m);
+  const inChute = st.roll && rollPose(st.roll.t).c[0] < W - 1.2;
+  const rc = st.roll && !inChute ? rollPose(st.roll.t).c : null;
+  // the capsule resting on the ground, when it is behind the machine in this view
+  const restFront = st.out && !st.roll && inFront(REST);
+  if (st.out && !st.roll && !restFront) s += groundCapsule();
+
+  // things sticking out of the front: with the front turned away, draw them before the body so it hides them
+  // (whatever pokes out past the silhouette — crank, flap, sill, a rolling capsule — still peeks out)
+  const plateArt = () => {
+    let pl = cylX(W, W+1.2, PLATE.y, PLATE.z, PLATE.r, METAL, toneI, 1.4, 36);
+    pl += ink(pd(on(PX(W+1.25), ellUV(PLATE.y, PLATE.z, PLATE.r - 1.6, PLATE.r - 1.6, 36))), .5);
+    for (let i=0;i<12;i++){ const a = i/12*2*Math.PI; pl += ink(pd([[W+1.25, PLATE.y + (PLATE.r-1.6)*Math.cos(a), PLATE.z + (PLATE.r-1.6)*Math.sin(a)],[W+1.25, PLATE.y + (PLATE.r-.6)*Math.cos(a), PLATE.z + (PLATE.r-.6)*Math.sin(a)]], false), .5); }
+    let sl = shape(on(PX(W+1.25), rrUV(SLOT[0]-1.3, SLOT[1]-1, SLOT[2]+1.3, SLOT[3]+1, 1.4)), METAL.d, .8);
+    sl += shape(on(PX(W+1.3), rrUV(...SLOT, .7)), '#26231f', .6);
+    return pl + act('slot', sl) + coinArt() + act('crank', crankArt(st.crank));
+  };
+  const flapAndRoll = () => (rc && rc[0] < W + 9) ? groundCapsule() + act('flap', flapArt())
+                                                 : act('flap', flapArt()) + (rc ? groundCapsule() : '');
+  const lipArt = () => box(W, CH.y0 - 1, CH.z0 - 2, W + 5, CH.y1 + 1, CH.z0, METAL, toneI, 1);
+  if (!front) s += lipArt() + plateArt() + flapAndRoll();
+
+  // base: body, side decals, back panel
+  s += extrude(OUT, 0, W, m);
+  if (facing([0,1,0])) s += sideLeftArt(m);
+  if (facing([0,-1,0])) s += sideRightArt(m);
+  if (facing([-1,0,0])) s += shape(on(PX(0), OUT), tone([-1,0,0], m), 0) + backArt(m);
+
+  if (front){
+    // chute opening: cavity, jamb, floor, capsule inside
+    const jy = facing([0,1,0]) ? CH.y0 : CH.y1;
+    let ch = fill(pd(on(PX(W-13), CHUTE)), mix(m.d, '#000000', .3));
+    ch += face(pd([[W-13,jy,CH.z0],[W,jy,CH.z0],[W,jy,CH.z1],[W-13,jy,CH.z1]]), mix(m.d, '#000000', .45));
+    ch += face(pd([[W-13,CH.y0,CH.z0],[W,CH.y0,CH.z0],[W,CH.y1,CH.z0],[W-13,CH.y1,CH.z0]]), mix(m.d, '#ffffff', .1));
+    if (inChute) ch += groundCapsule();
+    s += clipTo(on(PX(W), CHUTE), ch);
+
+    // front face with the chute hole
+    s += `<path d="${pd(on(F, OUT))}${pd(on(F, CHUTE))}" fill="${fr}" fill-rule="evenodd"/>`;
+    s += ink(pd(on(F, CHUTE)), 1.7);
+    // chute lip (metal sill the capsule rolls over)
+    s += lipArt();
+    // price label: lights up with a coin in
+    const lit = st.coin;
+    if (lit) s += fill(pd(on(PX(W+.2), rrUV(5.5, 41.6, 34.5, 52.8, 4))), '#ffe27a', 'opacity=".45"');
+    s += shape(on(PX(W+.3), rrUV(8, 44, 32, 50.4, 1.6)), lit ? '#ffe58a' : '#fff4d6', 1.2);
+    s += tx(W+.45, 20, 45.6, '100¥', 4.8, lit ? '#c8322a' : m.d, 800);
+    s += shape(on(PX(W+.3), ellUV(4.6, 47.2, 1.3, 1.3, 12)), lit ? '#43c25c' : '#e2483d', .7);
+    if (lit){ const [lx, ly] = P(W+.4, 4.6, 47.2); s += C2([lx, ly], 3.6, '#8af0ae', 'opacity=".35"'); }
+    // turn arrow above the plate
+    const arr = []; for (let i=0;i<=14;i++){ const a = (148 - 116*i/14)*Math.PI/180; arr.push([W+.3, PLATE.y + 13.2*Math.cos(a), PLATE.z + 13.2*Math.sin(a)]); }
+    s += `<path d="${pd(arr, false)}" fill="none" stroke="${mix(fr,'#000000',.4)}" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="2 1.6"/>`;
+    { const a = 150*Math.PI/180, ae = arr[0], tg = [-Math.sin(a), Math.cos(a)], nm = [Math.cos(a), Math.sin(a)];
+      s += fill(pd([[W+.3, ae[1] + tg[0]*2.2, ae[2] + tg[1]*2.2],[W+.3, ae[1] + nm[0]*1.3, ae[2] + nm[1]*1.3],[W+.3, ae[1] - nm[0]*1.3, ae[2] - nm[1]*1.3]]), mix(fr,'#000000',.4)); }
+    // coin / crank plate, then the flap + rolling capsule (the capsule passes under the open flap)
+    s += plateArt();
+    s += flapAndRoll();
+  }
+
+  // top slab + collar floor
+  s += box(-1.5, -1.5, BH, 41.5, 41.5, SLAB, m, tone, 1.3);
+  s += hullInk([...on(PX(0), OUT), ...on(PX(W), OUT), [-1.5,-1.5,SLAB],[41.5,-1.5,SLAB],[41.5,41.5,SLAB],[-1.5,41.5,SLAB],[41.5,41.5,BH],[41.5,-1.5,BH],[-1.5,41.5,BH],[-1.5,-1.5,BH]], 2.8);
+  if (front) s += ink(pd(on(F, OUT)), 2.2);
+  if (facing([-1,0,0])) s += ink(pd(on(PX(0), OUT)), 2.2);
+  const ringA = (z, r, n=40) => on(PZ(z), ellUV(CX, CY, r, r, n));
+  s += loft(ringA(SLAB, COLLAR_R), ringA(FLOOR, COLLAR_R), n => tone(n, m));
+  s += fill(pd(ringA(FLOOR, COLLAR_R)), tone([0,0,1], m));
+  s += fill(pd(ringA(FLOOR+.05, 13.5)), mix(tone([0,0,1], m), '#000000', .18)) + fill(pd(ringA(FLOOR+.1, 4.6, 20)), mix(m.d, '#000000', .3));
+
+  // globe + capsules
+  s += globeArt();
+
+  // collar front: the half ring in front of the glass (the half toward the viewer), and the band
+  const fr0 = [], fr1 = [], tv = unrot([1,1,0]), a0 = Math.atan2(tv[1], tv[0])*180/Math.PI - 90;
+  for (let i=0;i<=24;i++){ const a = (a0 + 180*i/24)*Math.PI/180; fr0.push([CX + COLLAR_R*Math.cos(a), CY + COLLAR_R*Math.sin(a), FLOOR]); fr1.push([CX + 13.5*Math.cos(a), CY + 13.5*Math.sin(a), FLOOR]); }
+  s += fill(pd([...fr0, ...fr1.reverse()]), tone([0,0,1], m));
+  s += loft(ringA(SLAB, COLLAR_R), ringA(FLOOR, COLLAR_R), n => tone(n, m));
+  s += ink(pd(fr1.reverse(), false), .9);
+  const fb = fr0.map(([x,y]) => [x, y, SLAB]);
+  s += ink(pd([...fr0.slice().reverse(), ...fb]), 1.6);
+  s += ink(pd(fr0, false), 1.2);
+
+  // metal cap on top of the globe
+  s += cyl(CX, CY, CAP_TOP, CAP_TOP + 2.6, 6.6, METAL, toneI, 1.3, 28);
+  s += cyl(CX, CY, CAP_TOP + 2.6, CAP_TOP + 3.6, 4.8, METAL, toneI, 1, 24);
+  s += ball([CX, CY, CAP_TOP + 4.6], 2.2, matOf(m.l), 1.1);
+
+  // dispensed capsule on the ground, in front of the machine
+  if (restFront) s += groundCapsule();
+  return s;
+}
+/* ---------- behaviour ---------- */
+let UI;
+const readout = st => {
+  if (st.coinT != null) return 'Clink — coin going in…';
+  if (st.turn){ const n = Math.min(4, Math.floor(st.turn.t*4 + .15)); return 'Turning — ' + (n ? Array(n).fill('click').join(' · ') : '…'); }
+  if (st.roll) return st.roll.t < .3 ? 'Ka-chunk! Something is coming down the chute…' : 'A capsule rolls out…';
+  if (st.out){
+    if (st.out.open >= 1) return `You got: ${PRIZES[st.out.prize]}${st.out.prize === 'star' ? ' (rare!)' : ''} — click to clear`;
+    if (st.out.open > 0) return 'Opening…';
+    return 'A capsule! Click it to open';
+  }
+  if (!st.pile.length) return 'Sold out — refill the globe';
+  return st.coin ? 'Coin in — the price lights up. Turn the crank' : `Insert a coin (100¥) — ${st.pile.length} capsules left`;
+};
+function kick(){
+  if (st._run) return; st._run = true;
+  UI.animate(dt => { const more = step(dt); if (!more) st._run = false; return more; });
+}
+function step(dt){
+  let a = false;
+  if (st.coinT != null){ st.coinT += dt/.75; a = true; if (st.coinT >= 1){ st.coinT = null; st.coin = true; } }
+  if (st.jig){ st.jig.t += dt/.5; const t = st.jig.t; st.crank = .22*Math.sin(t*Math.PI*3)*(1-t); a = true; if (t >= 1){ st.jig = null; st.crank = 0; } }
+  if (st.turn && !st.turn.frozen){
+    st.turn.t += dt/2; a = true;
+    const t = clamp(st.turn.t), q = Math.min(3.999, t*4);
+    st.crank = (Math.floor(q) + ease(clamp((q % 1)/.6)))*Math.PI/2;
+    if (t >= 1){ st.crank = 0; st.pile = st.turn.next; st.roll = { t:0, col:st.turn.drop.col }; st.turn = null; }
+  }
+  if (st.roll){ st.roll.t += dt/1.6; a = true;
+    if (st.roll.t >= 1){ st.out = { col:st.roll.col, prize:PRIZE_KEYS[Math.floor(Math.random()*PRIZE_KEYS.length)], open:0 }; st.roll = null; st.coin = false; } }
+  if (st.out && st.out.opening){ st.out.open = Math.min(1, st.out.open + dt/.8); a = true; if (st.out.open >= 1) st.out.opening = false; }
+  return a;
+}
+const busy = () => st.coinT != null || (st.turn && !st.turn.frozen) || st.roll || st.jig;
+function insertCoin(st, ui){
+  if (busy()) return;
+  if (st.coin) return ui.flash('There is already a coin in — turn the crank');
+  if (!st.pile.length) return ui.flash('Sold out — refill first');
+  if (st.out) return ui.flash('Take your capsule first');
+  st.coinT = 0; kick();
+}
+function prepareTurn(seed){
+  const pile = st.pile, low = pile.reduce((a,b) => (b.p[2] - .3*Math.hypot(b.p[0]-CX, b.p[1]-CY)) < (a.p[2] - .3*Math.hypot(a.p[0]-CX, a.p[1]-CY)) ? b : a);
+  const rest = pile.filter(c => c !== low).sort((a,b) => a.p[2] - b.p[2]);
+  return { t:0, drop:low, next:settle(rest, rng(seed)) };
+}
+function turnCrank(st, ui){
+  if (st.turn && st.turn.frozen){ st.turn.frozen = false; kick(); return; }
+  if (busy()) return;
+  if (st.out) return ui.flash('Take your capsule first — click it');
+  if (!st.coin){ ui.flash('Insert a coin first'); st.jig = { t:0 }; kick(); return; }
+  if (!st.pile.length) return ui.flash('Sold out');
+  st.turn = prepareTurn(st.served++ * 31 + 5); kick();
+}
+function clickCapsule(st, ui){
+  if (!st.out || st.roll) return;
+  if (st.out.open <= 0){ st.out.opening = true; kick(); return; }
+  if (st.out.open >= 1){ const n = PRIZES[st.out.prize]; st.out = null; ui.flash(`${n} added to your collection`); }
+}
+
+UI = mountFigure({
+  fig:'13', title:'Capsule toy machine', hint:'insert a coin, turn the crank, open the capsule',
+  idea:"Each turn of the crank lines up one capsule-sized hole, so exactly one capsule drops out for each coin.",
+  size:[62, 42, 97], center:[CX, CY], views:true, palette:'blush', state:st,
+  scene,
+  readout,
+  buttonsLabel:'Machine',
+  buttons:[
+    { label:'Insert coin', onClick:(st, ui) => insertCoin(st, ui) },
+    { label:'Turn crank', onClick:(st, ui) => turnCrank(st, ui) },
+    { label:'Open capsule', onClick:(st, ui) => !st.out ? ui.flash('No capsule yet') : st.out.open > 0 ? ui.flash('Already open') : clickCapsule(st, ui) },
+    { label:'Put the prize away', onClick:(st, ui) => st.out && st.out.open >= 1 ? clickCapsule(st, ui) : ui.flash('Open a capsule first') },
+    { label:'Refill', onClick:(st, ui) => { if (busy()) return; st.pile = freshPile(Math.floor(Math.random()*1e6)); ui.flash('Globe refilled'); } },
+  ],
+  next: st => busy() || (st.out && st.out.opening) ? -1 : st.out ? (st.out.open >= 1 ? 3 : 2) : !st.pile.length ? 4 : st.coin ? 1 : 0,
+  stats: st => [ { label:'Credit', value: st.coin ? '100¥' : '0¥' }, { label:'Capsules left', value: st.pile.length, small:true } ],
+  acts:{
+    slot:(st, el, ui) => insertCoin(st, ui),
+    crank:(st, el, ui) => turnCrank(st, ui),
+    capsule:(st, el, ui) => clickCapsule(st, ui),
+    flap:(st, el, ui) => { if (!st.out && !st.roll) ui.flash(st.coin ? 'Turn the crank to get a capsule' : 'Empty — insert a coin and turn the crank'); },
+    globe:(st, el, ui) => { if (!busy()) ui.flash(`${st.pile.length} capsules inside — what will you get?`); },
+  },
+  params:(st, q) => {
+    if (q.get('coin') === '1') st.coin = true;
+    if (q.has('crank')){ const t = clamp(+q.get('crank')); st.coin = true; st.turn = prepareTurn(5); st.turn.t = t; st.turn.frozen = true;
+      const qq = Math.min(3.999, t*4); st.crank = (Math.floor(qq) + ease(clamp((qq % 1)/.6)))*Math.PI/2; }
+    if (q.has('insert')) st.coinT = clamp(+q.get('insert'), 0, .99);
+    if (q.has('roll')){ st.roll = { t:clamp(+q.get('roll')), col:'#e2473a' }; }
+    const pz = q.get('prize');
+    if (q.get('capsule') === 'out' || PRIZES[pz]) st.out = { col:q.get('col') || '#3e86d9', prize:PRIZES[pz] ? pz : 'duck', open:PRIZES[pz] ? clamp(q.has('open') ? +q.get('open') : 1) : 0 };
+  },
+});
+</script></body></html>

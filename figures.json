@@ -1,0 +1,111 @@
+[
+  {
+    "id": "washer",
+    "name": "Washing machine",
+    "gen": "current",
+    "head": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body>\n<script>",
+    "mid": "</script>\n<script>",
+    "tail": "</script></body></html>\n"
+  },
+  {
+    "id": "espresso",
+    "name": "Espresso machine",
+    "gen": "current",
+    "head": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Espresso machine</title></head><body>\n<script>",
+    "mid": "</script>\n<script>",
+    "tail": "</script></body></html>\n"
+  },
+  {
+    "id": "vending",
+    "name": "Vending machine",
+    "gen": "current",
+    "head": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Vending machine</title>\n</head>\n<body>\n<script>",
+    "mid": "</script>\n<script>",
+    "tail": "</script>\n</body>\n</html>\n"
+  },
+  {
+    "id": "toaster",
+    "name": "Toaster",
+    "gen": "legacy-2.0"
+  },
+  {
+    "id": "microwave",
+    "name": "Microwave",
+    "gen": "current",
+    "head": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Microwave</title></head><body>\n<script>",
+    "mid": "</script>\n<script>",
+    "tail": "</script></body></html>\n"
+  },
+  {
+    "id": "sharpener",
+    "name": "Pencil sharpener",
+    "gen": "legacy-2.0"
+  },
+  {
+    "id": "windup",
+    "name": "Wind-up toy",
+    "gen": "legacy-2.0"
+  },
+  {
+    "id": "crossing",
+    "name": "Traffic light",
+    "gen": "legacy-2.0"
+  },
+  {
+    "id": "smokealarm",
+    "name": "Smoke alarm",
+    "gen": "legacy-2.0"
+  },
+  {
+    "id": "fridge",
+    "name": "Fridge",
+    "gen": "current",
+    "head": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body>\n<script>",
+    "mid": "</script>\n<script>",
+    "tail": "</script></body></html>\n"
+  },
+  {
+    "id": "musicbox",
+    "name": "Music box",
+    "gen": "legacy-2.0"
+  },
+  {
+    "id": "cistern",
+    "name": "Toilet flush",
+    "gen": "legacy-2.0"
+  },
+  {
+    "id": "gashapon",
+    "name": "Capsule toy machine",
+    "gen": "current",
+    "head": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Capsule toy machine</title></head><body>\n<script>",
+    "mid": "</script>\n<script>",
+    "tail": "</script></body></html>\n"
+  },
+  {
+    "id": "photobooth",
+    "name": "Photo booth",
+    "gen": "current",
+    "head": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body>\n<script>",
+    "mid": "</script>\n<script>",
+    "tail": "</script></body></html>\n"
+  },
+  {
+    "id": "arcade",
+    "name": "Arcade cabinet",
+    "gen": "current",
+    "head": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Arcade cabinet</title></head><body>\n<script>",
+    "mid": "</script>\n<script>",
+    "tail": "</script></body></html>\n"
+  },
+  {
+    "id": "foodtruck",
+    "name": "Food truck",
+    "gen": "legacy-2.0"
+  },
+  {
+    "id": "booth",
+    "name": "Toilet booth",
+    "gen": "legacy-2.0"
+  }
+]
